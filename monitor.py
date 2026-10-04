@@ -5,12 +5,15 @@ from email.mime.text import MIMEText
 import yfinance as yf
 
 # ==============================================================================
-# 📋 NBIM 台灣持股前 50 大監控名單 (維護區)
+# 📋 嚴格持股維護區
+# 條件 1：挪威主權基金 (NBIM) 持股比例 > 10%
+# 條件 2：名列國內前 25 大主流 ETF（0050, 0056, 00878, 00919, 00929等）的前 25 大核心重倉持股
 # ==============================================================================
-LAST_UPDATE_DATE = "2026-10-01"      # 上次更新持股清單日期
-NEXT_UPDATE_DATE = "2027-04-01"      # 建議下次覆盤/更新持股清單日期
+LAST_UPDATE_DATE = "2026-10-01"      # 上次修訂日期
+NEXT_UPDATE_DATE = "2027-04-01"      # 建議下次更新日期
 
-NBIM_TOP50_WATCHLIST = {
+# 雙重交集精華清單：[股票名稱]
+WATCHLIST = {
     # 權值與半導體
     '2330.TW': '台積電', '2454.TW': '聯發科', '2317.TW': '鴻海', '2308.TW': '台達電',
     '2303.TW': '聯電', '3711.TW': '日月光投控', '2379.TW': '瑞昱', '3034.TW': '聯詠',
@@ -28,23 +31,20 @@ NBIM_TOP50_WATCHLIST = {
     '3008.TW': '大立光', '2409.TW': '友達', '3481.TW': '群創', '2603.TW': '長榮',
     '2609.TW': '陽明', '2615.TW': '萬海', '9910.TW': '豐泰', '9921.TW': '巨大',
     '1476.TW': '儒鴻', '1477.TW': '聚陽', '8454.TW': '富邦媒', '6409.TW': '旭隼',
-    '6121.TW': '新普', '5483.TW': '中美晶'
+    '6121.TW': '新普', '5483.TW': '中美晶'    
 }
 
 def scan_stocks():
-    """
-    掃描 50 檔標的，計算近 3 個月最高價與拉回幅度
-    """
     scanned_results = []
     pullback_list = []
     
-    print(f"開始執行 {len(NBIM_TOP50_WATCHLIST)} 檔標的價格掃描...")
+    print(f"開始掃描 {len(WATCHLIST)} 檔「雙重籌碼交集」標的...")
 
-    for ticker, name in NBIM_TOP50_WATCHLIST.items():
+    for ticker, name in WATCHLIST.items():
         code = ticker.replace('.TW', '').replace('.TWO', '')
         try:
             stock = yf.Ticker(ticker)
-            df = stock.history(period="3mo")  # 抓取近 3 個月數據
+            df = stock.history(period="3mo")
             
             if df.empty and ticker.endswith('.TW'):
                 stock = yf.Ticker(f"{code}.TWO")
@@ -64,12 +64,16 @@ def scan_stocks():
                 }
                 
                 scanned_results.append(item)
-                if drop_pct >= 10.0:
+                
+                # 🎯 紀律條件：僅鎖定拉回 10.0% ~ 15.0% 的黃金波段區
+                if 10.0 <= drop_pct <= 15.0:
                     pullback_list.append(item)
         except Exception as e:
             print(f"掃描 {code} {name} 失敗: {e}")
 
-    pullback_list.sort(key=lambda x: x['drop'], reverse=True)
+    # 依跌幅大小排序（跌幅大的排前面）
+    pullback_list.sort(key=lambda x: -x['drop'])
+    scanned_results.sort(key=lambda x: -x['drop'])
     return scanned_results, pullback_list
 
 def send_email(subject, body):
@@ -80,7 +84,7 @@ def send_email(subject, body):
     receiver_email = os.environ.get('RECEIVER_EMAIL')
 
     if not all([sender_email, sender_password, receiver_email]):
-        print("未設定 Email 環境變數，無法發送。")
+        print("未設定 Email 環境變數，跳過發送。")
         return
 
     msg = MIMEMultipart()
@@ -102,7 +106,7 @@ def send_email(subject, body):
 def main():
     scanned_results, pullbacks = scan_stocks()
     
-    # 1. 超跌 >= 10% 區塊
+    # 1. 觸發黃金觀察區 (10%~15%)
     if pullbacks:
         target_rows = ""
         for item in pullbacks:
@@ -115,13 +119,13 @@ def main():
             </tr>
             """
         target_html = f"""
-        <h3 style='color: #d9534f;'>🎯 觸發注意：以下 {len(pullbacks)} 檔標的已自近 3 個月高點拉回超過 10%！</h3>
+        <h3 style='color: #d9534f;'>🎯 觸發注意：以下 {len(pullbacks)} 檔雙重認證標的已進入「拉回 10% ~ 15% 黃金觀察區」！</h3>
         <table style='border-collapse: collapse; width: 100%;'>
             <thead>
                 <tr style='background-color: #f2f2f2;'>
                     <th style='border: 1px solid #ddd; padding: 8px;'>標的</th>
                     <th style='border: 1px solid #ddd; padding: 8px;'>3個月高點</th>
-                    <th style='border: 1px solid #ddd; padding: 8px;'>最新收盤價</th>
+                    <th style='border: 1px solid #ddd; padding: 8px;'>最新價</th>
                     <th style='border: 1px solid #ddd; padding: 8px;'>拉回幅度</th>
                 </tr>
             </thead>
@@ -131,12 +135,13 @@ def main():
         </table>
         """
     else:
-        target_html = "<p style='color: green;'><b>✅ 掃描結果：50 大持股目前皆未出現 10% 以上的明顯拉回。</b></p>"
+        target_html = "<p style='color: green;'><b>✅ 掃描結果：目前沒有核心標的落在 10%～15% 的黃金拉回區。</b></p>"
 
-    # 2. 全量掃描總覽
+    # 2. 雙重認證池總覽
     all_rows = ""
     for item in scanned_results:
-        color_style = "color: #d9534f; font-weight: bold;" if item['drop'] >= 10.0 else "color: #333;"
+        color_style = "color: #d9534f; font-weight: bold;" if 10.0 <= item['drop'] <= 15.0 else "color: #333;"
+        
         all_rows += f"""
         <tr style='text-align: center;'>
             <td style='border: 1px solid #ddd; padding: 6px;'>{item['code']}</td>
@@ -148,7 +153,7 @@ def main():
         """
 
     summary_table_html = f"""
-    <h3>📋 NBIM 台灣持股前 50 大完整掃描總覽（已驗證 {len(scanned_results)}/50 檔）</h3>
+    <h3>📋 雙重核心持股掃描總覽（共 {len(scanned_results)} 檔）</h3>
     <table style='border-collapse: collapse; width: 100%; font-size: 14px;'>
         <thead>
             <tr style='background-color: #f8f9fa;'>
@@ -165,21 +170,20 @@ def main():
     </table>
     """
 
-    subject = f"【挪威主權基金月報】前 50 大持股掃描完畢（發現 {len(pullbacks)} 檔拉回 >10%）"
+    subject = f"【法人籌碼月報】已鎖定 {len(pullbacks)} 檔精華標的落在黃金拉回區（10%~15%）"
     
     html_content = f"""
-    <h2>📊 每月挪威主權基金持股與價格掃描通知</h2>
+    <h2>📊 挪威基金 (>10%) + 國內主要 ETF 前25大重倉 雙重掃描通知</h2>
     <div style='background-color: #e9ecef; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px;'>
         <b>🛠️ 持股清單維護狀態：</b><br>
         • 上次修訂日期：<b>{LAST_UPDATE_DATE}</b><br>
-        • 建議下次更新：<b>{NEXT_UPDATE_DATE}</b>（建議每半年至 NBIM 官網比對一次最新持股）
+        • 建議下次更新：<b>{NEXT_UPDATE_DATE}</b>（建議每半年核對一次各大 ETF 權重）
     </div>
     <hr>
     <h3>📌 交易紀律提醒：</h3>
     <ol>
-        <li><b>觀察超跌標的：</b> 優先檢視下方拉回超過 10% 的觀察清單。</li>
-        <li><b>雙重確認：</b> 確認同族群是否集體回檔，且千張大戶籌碼未鬆動。</li>
-        <li><b>技術面進場：</b> 開啟券商 App 觀察<b>【第二隻腳鬧鈴（日 KD 黃金交叉/止跌）】</b>。</li>
+        <li><b>雙重保險：</b> 清單標的皆通過「挪威基金長線持有 >10%」與「國內主流 ETF 前25大重倉」雙重審核。</li>
+        <li><b>進場驗證：</b> 避開暴跌 >20% 有基本面疑慮的刀子，僅在拉回 10%~15% 且日 KD 築底時觀察進場。</li>
     </ol>
     <hr>
     {target_html}
