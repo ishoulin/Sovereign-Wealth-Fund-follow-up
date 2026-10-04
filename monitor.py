@@ -2,33 +2,52 @@ import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import requests
+import yfinance as yf
+import pandas as pd
 
-def get_nbim_taiwan_holdings():
+# 挪威主權基金核心台股觀察池（可自行隨時增減代碼）
+# 包含台積電、聯發科、日月光、鴻海、台達電、廣達、緯創、致茂、奇鋐等熱門持股
+NBIM_WATCHLIST = {
+    '2330.TW': '台積電',
+    '2454.TW': '聯發科',
+    '2317.TW': '鴻海',
+    '2308.TW': '台達電',
+    '2382.TW': '廣達',
+    '3017.TW': '奇鋐',
+    '2376.TW': '技嘉',
+    '3231.TW': '緯創',
+    '2360.TW': '致茂',
+    '3034.TW': '聯詠'
+}
+
+def check_stock_pullbacks():
     """
-    從 NBIM 官方開放資料或預備 API 抓取台灣持股清單
+    掃描觀察池中的標的，計算是否自近期高點拉回 10% ~ 20%
     """
-    # 做法 1：嘗試官方 CSV / Open Data 網址
-    csv_url = "https://www.nbim.no/contentassets/holdings/holdings-2023.csv" # 官方歷年 CSV 結構
+    pullback_list = []
     
-    # 做法 2：備用 - 直接向台股 API (如 yfinance / 證交所) 抓取或使用現成備用檔
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
-    try:
-        # 使用 requests 加上 User-Agent 避免被擋
-        response = requests.get("https://www.nbim.no/api/investments/holdings/getholdings", headers=headers, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            holdings = data.get('holdings', [])
-            taiwan_stocks = [item for item in holdings if item.get('country') == 'Taiwan']
-            taiwan_stocks.sort(key=lambda x: x.get('market_value_usd', 0), reverse=True)
-            return taiwan_stocks
-    except Exception as e:
-        print(f"API 抓取失敗: {e}")
-    
-    return []
+    for ticker, name in NBIM_WATCHLIST.items():
+        try:
+            stock = yf.Ticker(ticker)
+            df = stock.history(period="3m") # 抓取近 3 個月 K 線數據
+            if not df.empty:
+                high_price = df['High'].max() # 近 3 個月最高價
+                current_price = df['Close'].iloc[-1] # 最新收盤價
+                drop_pct = ((high_price - current_price) / high_price) * 100
+                
+                # 篩選自高點拉回 10% 以上的標的
+                if drop_pct >= 10.0:
+                    pullback_list.append({
+                        'code': ticker.replace('.TW', ''),
+                        'name': name,
+                        'high': round(high_price, 2),
+                        'current': round(current_price, 2),
+                        'drop': round(drop_pct, 1)
+                    })
+        except Exception as e:
+            print(f"檢查 {ticker} 失敗: {e}")
+            
+    return pullback_list
 
 def send_email(subject, body):
     smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
@@ -38,7 +57,7 @@ def send_email(subject, body):
     receiver_email = os.environ.get('RECEIVER_EMAIL')
 
     if not all([sender_email, sender_password, receiver_email]):
-        print("未設定 Email 環境變數，無法發送郵件。")
+        print("未設定 Email 環境變數。")
         return
 
     msg = MIMEMultipart()
@@ -53,41 +72,34 @@ def send_email(subject, body):
         server.login(sender_email, sender_password)
         server.send_message(msg)
         server.quit()
-        print("Email 通知發送成功！")
+        print("Email 發送成功！")
     except Exception as e:
         print(f"發送 Email 失敗: {e}")
 
 def main():
-    print("正在抓取挪威主權基金最新台灣持股名單...")
-    taiwan_holdings = get_nbim_taiwan_holdings()
+    print("開始掃描 NBIM 概念股價格拉回狀況...")
+    pullbacks = check_stock_pullbacks()
     
-    # 組合持股 HTML 表格
-    if taiwan_holdings:
+    if pullbacks:
         rows_html = ""
-        for i, stock in enumerate(taiwan_holdings[:50], 1):  # 預設列出前 50 大持股
-            name = stock.get('name', 'N/A')
-            ownership = stock.get('ownership', 0)  # 持股比例 %
-            val_usd = stock.get('market_value_usd', 0) / 1000000  # 轉成百萬美元
-            
+        for item in pullbacks:
             rows_html += f"""
-            <tr>
-                <td style='border: 1px solid #ddd; padding: 8px;'>{i}</td>
-                <td style='border: 1px solid #ddd; padding: 8px;'><b>{name}</b></td>
-                <td style='border: 1px solid #ddd; padding: 8px;'>{ownership:.2f}%</td>
-                <td style='border: 1px solid #ddd; padding: 8px;'>${val_usd:,.2f} M</td>
+            <tr style='text-align: center;'>
+                <td style='border: 1px solid #ddd; padding: 8px;'><b>{item['code']} {item['name']}</b></td>
+                <td style='border: 1px solid #ddd; padding: 8px;'>${item['high']}</td>
+                <td style='border: 1px solid #ddd; padding: 8px;'>${item['current']}</td>
+                <td style='border: 1px solid #ddd; padding: 8px; color: red;'><b>-{item['drop']}%</b></td>
             </tr>
             """
-        
         table_html = f"""
-        <h3>🇹🇼 挪威主權基金持股 - 台灣前 50 大標的清單</h3>
-        <p>（資料來源：NBIM 官方最新公開年報資料，共持有 {len(taiwan_holdings)} 檔台股）</p>
-        <table style='border-collapse: collapse; width: 100%; text-align: left;'>
+        <h3 style='color: #d9534f;'>🎯 警告：發現以下 NBIM 持股已自高點拉回超過 10%！</h3>
+        <table style='border-collapse: collapse; width: 100%;'>
             <thead>
                 <tr style='background-color: #f2f2f2;'>
-                    <th style='border: 1px solid #ddd; padding: 8px;'>#</th>
-                    <th style='border: 1px solid #ddd; padding: 8px;'>公司名稱</th>
-                    <th style='border: 1px solid #ddd; padding: 8px;'>持股比例 (%)</th>
-                    <th style='border: 1px solid #ddd; padding: 8px;'>持股市值 (USD)</th>
+                    <th style='border: 1px solid #ddd; padding: 8px;'>標的</th>
+                    <th style='border: 1px solid #ddd; padding: 8px;'>3個月高點</th>
+                    <th style='border: 1px solid #ddd; padding: 8px;'>最新收盤價</th>
+                    <th style='border: 1px solid #ddd; padding: 8px;'>拉回幅度</th>
                 </tr>
             </thead>
             <tbody>
@@ -96,26 +108,23 @@ def main():
         </table>
         """
     else:
-        table_html = "<p>⚠️ 暫時無法自動取得 NBIM 官方台灣持股清單，請至官網手動查詢。</p>"
+        table_html = "<p>✅ 目前觀察池中的 NBIM 概念股皆未出現 10% 以上的明顯拉回（表現相對強勢）。</p>"
 
-    subject = "【挪威主權基金月報】持股清單與檢查通知"
+    subject = "【挪威主權基金月報】拉回 10% 觸發標的與檢查通知"
     
     html_content = f"""
     <h2>📊 每月挪威主權基金持股與價格掃描通知</h2>
-    <p>這是您設定的 GitHub 機器人月度通知。</p>
-    
     <hr>
-    <h3>📌 檢查任務備忘錄：</h3>
+    <h3>📌 執行步驟簡要：</h3>
     <ol>
-        <li><b>比對最新持股：</b> 確認關注的標的是否仍留在 NBIM 名單內（未被清倉剔除）。</li>
-        <li><b>鎖定拉回標的：</b> 檢查持股池中是否有標的自高點拉回 <b>10%~15%</b>。</li>
-        <li><b>雙重確認：</b> 確認該拉回為同產業集體回檔，且千張大戶籌碼未鬆動。</li>
-        <li><b>觸發點：</b> 若條件滿足，開啟券商 App 觀察<b>【第二隻腳鬧鈴（日 KD 黃金交叉/止跌）】</b>準備分批佈局。</li>
+        <li><b>觀察超跌標的：</b> 優先檢視下方自動算出的拉回 10% 觀察清單。</li>
+        <li><b>雙重確認：</b> 確認同族群是否集體回檔，且大戶籌碼未鬆動。</li>
+        <li><b>技術面進場：</b> 開啟券商 App 觀察<b>【第二隻腳鬧鈴（日 KD 黃金交叉/止跌）】</b>。</li>
     </ol>
     <hr>
     {table_html}
     <hr>
-    <p><i>祝您這個月交易紀律嚴明，穩健獲利！</i></p>
+    <p><i>祝您交易紀律嚴明，穩健獲利！</i></p>
     """
     
     send_email(subject, html_content)
