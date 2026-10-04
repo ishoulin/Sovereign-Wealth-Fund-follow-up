@@ -5,49 +5,107 @@ from email.mime.text import MIMEText
 import yfinance as yf
 import pandas as pd
 
-# 挪威主權基金核心台股觀察池（可自行隨時增減代碼）
-# 包含台積電、聯發科、日月光、鴻海、台達電、廣達、緯創、致茂、奇鋐等熱門持股
-NBIM_WATCHLIST = {
-    '2330.TW': '台積電',
-    '2454.TW': '聯發科',
-    '2317.TW': '鴻海',
-    '2308.TW': '台達電',
-    '2382.TW': '廣達',
-    '3017.TW': '奇鋐',
-    '2376.TW': '技嘉',
-    '3231.TW': '緯創',
-    '2360.TW': '致茂',
-    '3034.TW': '聯詠'
-}
+def get_dynamic_nbim_top50(csv_filename='nbim_holdings.csv'):
+    """
+    從 Repo 內的 CSV 檔案動態解析出最新台灣持股前 50 大標的
+    """
+    if not os.path.exists(csv_filename):
+        print(f"⚠️ 找不到 {csv_filename}，請確認檔案已 Commit 至 Repository。")
+        return {}
+
+    try:
+        df = pd.read_csv(csv_filename)
+        
+        # 1. 欄位相容處理（視 NBIM 官方 CSV 欄位名稱自動調整）
+        country_col = [c for c in df.columns if 'country' in c.lower()][0]
+        name_col = [c for c in df.columns if 'name' in c.lower() or 'company' in c.lower()][0]
+        val_col = [c for c in df.columns if 'market value' in c.lower() or 'value' in c.lower()][0]
+        ticker_col = [c for c in df.columns if 'ticker' in c.lower() or 'code' in c.lower()]
+
+        # 2. 篩選台灣持股 (Taiwan)
+        taiwan_df = df[df[country_col].astype(str).str.contains('Taiwan', case=False, na=False)].copy()
+        
+        # 3. 依持股市值 (USD) 排序取前 50 大
+        taiwan_df[val_col] = pd.to_numeric(taiwan_df[val_col].astype(str).str.replace(',', ''), errors='coerce')
+        taiwan_df = taiwan_df.sort_values(by=val_col, ascending=False).head(50)
+
+        top50_dict = {}
+        for _, row in taiwan_df.iterrows():
+            name = str(row[name_col]).strip()
+            
+            # 若 CSV 內已有股票代碼則使用，若無則依公司名稱或現有代碼格式處理
+            if ticker_col:
+                raw_code = str(row[ticker_col[0]]).strip()
+                # 處理台股代碼後綴（上市 .TW / 上櫃 .TWO）
+                ticker = raw_code if raw_code.endswith(('.TW', '.TWO')) else f"{raw_code}.TW"
+            else:
+                # 備用邏輯：若 CSV 無代碼欄位，可透過對照字典或轉換名稱
+                continue
+                
+            top50_dict[ticker] = name
+
+        print(f"✅ 成功從 {csv_filename} 解析出 {len(top50_dict)} 檔台灣前 50 大持股。")
+        return top50_dict
+
+    except Exception as e:
+        print(f"❌ 解析 CSV 失敗: {e}")
+        return {}
 
 def check_stock_pullbacks():
     """
-    掃描觀察池中的標的，計算是否自近期高點拉回 10% ~ 20%
+    掃描動態取得的前 50 大標的，計算近 3 個月最高價與拉回幅度
     """
+    nbim_watchlist = get_dynamic_nbim_top50()
+    
+    # 若 CSV 解析失敗，可設定一組基礎備用名單
+    if not nbim_watchlist:
+        print("使用備用預設觀察池...")
+        nbim_watchlist = {
+            '2330.TW': '台積電', '2454.TW': '聯發科', '2317.TW': '鴻海',
+            '2308.TW': '台達電', '2382.TW': '廣達', '3017.TW': '奇鋐',
+            '2376.TW': '技嘉', '3231.TW': '緯創', '2360.TW': '致茂', '3034.TW': '聯詠'
+        }
+
+    scanned_results = []
     pullback_list = []
     
-    for ticker, name in NBIM_WATCHLIST.items():
+    for ticker, name in nbim_watchlist.items():
+        code = ticker.replace('.TW', '').replace('.TWO', '')
         try:
             stock = yf.Ticker(ticker)
             df = stock.history(period="3m") # 抓取近 3 個月 K 線數據
+            
+            # 若上市 .TW 抓不到，嘗試切換為上櫃 .TWO 重新抓取
+            if df.empty and ticker.endswith('.TW'):
+                alt_ticker = f"{code}.TWO"
+                stock = yf.Ticker(alt_ticker)
+                df = stock.history(period="3m")
+
             if not df.empty:
                 high_price = df['High'].max() # 近 3 個月最高價
                 current_price = df['Close'].iloc[-1] # 最新收盤價
                 drop_pct = ((high_price - current_price) / high_price) * 100
                 
+                item = {
+                    'code': code,
+                    'name': name,
+                    'high': round(high_price, 2),
+                    'current': round(current_price, 2),
+                    'drop': round(drop_pct, 1)
+                }
+                
+                scanned_results.append(item)
+                
                 # 篩選自高點拉回 10% 以上的標的
                 if drop_pct >= 10.0:
-                    pullback_list.append({
-                        'code': ticker.replace('.TW', ''),
-                        'name': name,
-                        'high': round(high_price, 2),
-                        'current': round(current_price, 2),
-                        'drop': round(drop_pct, 1)
-                    })
+                    pullback_list.append(item)
+
         except Exception as e:
-            print(f"檢查 {ticker} 失敗: {e}")
+            print(f"檢查 {ticker} ({name}) 失敗: {e}")
             
-    return pullback_list
+    # 將拉回標的按拉回幅度由大到小排序
+    pullback_list.sort(key=lambda x: x['drop'], reverse=True)
+    return scanned_results, pullback_list
 
 def send_email(subject, body):
     smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
