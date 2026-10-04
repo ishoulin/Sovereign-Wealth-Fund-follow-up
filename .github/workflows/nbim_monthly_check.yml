@@ -1,0 +1,37 @@
+name: NBIM Monthly Holding & Drop Check
+
+on:
+  schedule:
+    # 語法：分 時 日 月 星期 (UTC 時間)
+    # 下方代表：每月 1 號 UTC 01:00（等於台灣時間每月 1 號上午 03:00）自動執行
+    - cron: '0 3 1 * *'
+  
+  # 允許你在 GitHub 網頁介面隨時點擊 "Run workflow" 手動觸發測試
+  workflow_dispatch:
+
+jobs:
+  run-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas
+
+      - name: Run NBIM Monitor Script
+        env:
+          SMTP_SERVER: 'smtp.gmail.com'
+          SMTP_PORT: '587'
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        run: |
+          python monitor.py
