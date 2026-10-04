@@ -2,68 +2,50 @@ import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import pandas as pd
 import yfinance as yf
 
-# 預備觀察池（若未上傳 nbim_holdings.csv 時使用）
-DEFAULT_WATCHLIST = {
-    '2330.TW': '台積電', '2454.TW': '聯發科', '2317.TW': '鴻海', '2308.TW': '台達電', 
-    '2382.TW': '廣達', '2379.TW': '瑞昱', '3034.TW': '聯詠', '2303.TW': '聯電', 
-    '3711.TW': '日月光投控', '2881.TW': '富邦金', '2882.TW': '國泰金', '2891.TW': '中信金', 
-    '2886.TW': '兆豐金', '3008.TW': '大立光', '2357.TW': '華碩', '3231.TW': '緯創', 
-    '6669.TW': '緯穎', '3017.TW': '奇鋐', '2376.TW': '技嘉', '2360.TW': '致茂'
+# ==============================================================================
+# 📋 NBIM 台灣持股前 50 大監控名單 (維護區)
+# ==============================================================================
+LAST_UPDATE_DATE = "2026-10-01"      # 上次更新持股清單日期
+NEXT_UPDATE_DATE = "2027-04-01"      # 建議下次覆盤/更新持股清單日期
+
+NBIM_TOP50_WATCHLIST = {
+    # 權值與半導體
+    '2330.TW': '台積電', '2454.TW': '聯發科', '2317.TW': '鴻海', '2308.TW': '台達電',
+    '2303.TW': '聯電', '3711.TW': '日月光投控', '2379.TW': '瑞昱', '3034.TW': '聯詠',
+    '3661.TW': '世芯-KY', '3443.TW': '創意', '3529.TW': '力旺', '5269.TW': '祥碩',
+    '3035.TW': '智原', '6415.TW': '矽力*-KY', '2408.TW': '南亞科', '2337.TW': '旺宏',
+    
+    # AI 伺服器、散熱與組裝
+    '2382.TW': '廣達', '3231.TW': '緯創', '6669.TW': '緯穎', '3017.TW': '奇鋐',
+    '2376.TW': '技嘉', '2360.TW': '致茂', '2059.TW': '川湖', '2345.TW': '智邦',
+    '2357.TW': '華碩', '1519.TW': '華城', '1504.TW': '東元', '1513.TW': '中興電',
+    '3037.TW': '欣興', '8046.TW': '南電', '3189.TW': '景碩', '6271.TW': '同欣電',
+    
+    # 金融與傳統權值
+    '2881.TW': '富邦金', '2882.TW': '國泰金', '2891.TW': '中信金', '2886.TW': '兆豐金',
+    '3008.TW': '大立光', '2409.TW': '友達', '3481.TW': '群創', '2603.TW': '長榮',
+    '2609.TW': '陽明', '2615.TW': '萬海', '9910.TW': '豐泰', '9921.TW': '巨大',
+    '1476.TW': '儒鴻', '1477.TW': '聚陽', '8454.TW': '富邦媒', '6409.TW': '旭隼',
+    '6121.TW': '新普', '5483.TW': '中美晶'
 }
-
-def get_nbim_watchlist(csv_filename='nbim_holdings.csv'):
-    """
-    動態讀取 CSV，若無 CSV 則自動切換至預備清單
-    """
-    if not os.path.exists(csv_filename):
-        print(f"⚠️ 找不到 {csv_filename}，使用預備觀察池進行掃描...")
-        return DEFAULT_WATCHLIST
-
-    try:
-        df = pd.read_csv(csv_filename)
-        country_col = [c for c in df.columns if 'country' in c.lower()][0]
-        name_col = [c for c in df.columns if 'name' in c.lower() or 'company' in c.lower()][0]
-        val_col = [c for c in df.columns if 'market value' in c.lower() or 'value' in c.lower()][0]
-        ticker_col = [c for c in df.columns if 'ticker' in c.lower() or 'code' in c.lower()]
-
-        taiwan_df = df[df[country_col].astype(str).str.contains('Taiwan', case=False, na=False)].copy()
-        taiwan_df[val_col] = pd.to_numeric(taiwan_df[val_col].astype(str).str.replace(',', ''), errors='coerce')
-        taiwan_df = taiwan_df.sort_values(by=val_col, ascending=False).head(50)
-
-        watchlist = {}
-        for _, row in taiwan_df.iterrows():
-            name = str(row[name_col]).strip()
-            if ticker_col:
-                raw_code = str(row[ticker_col[0]]).strip().replace('$', '')
-                ticker = raw_code if raw_code.endswith(('.TW', '.TWO')) else f"{raw_code}.TW"
-                watchlist[ticker] = name
-                
-        return watchlist if watchlist else DEFAULT_WATCHLIST
-    except Exception as e:
-        print(f"❌ 解析 CSV 失敗 ({e})，切換至預備觀察池...")
-        return DEFAULT_WATCHLIST
 
 def scan_stocks():
     """
-    掃描標的，計算近 3 個月高點與拉回幅度
+    掃描 50 檔標的，計算近 3 個月最高價與拉回幅度
     """
-    watchlist = get_nbim_watchlist()
     scanned_results = []
     pullback_list = []
     
-    print(f"開始執行 {len(watchlist)} 檔標的價格掃描...")
+    print(f"開始執行 {len(NBIM_TOP50_WATCHLIST)} 檔標的價格掃描...")
 
-    for ticker, name in watchlist.items():
+    for ticker, name in NBIM_TOP50_WATCHLIST.items():
         code = ticker.replace('.TW', '').replace('.TWO', '')
         try:
             stock = yf.Ticker(ticker)
-            # 修正 1：yfinance 3個月的正確參數是 '3mo'，而非 '3m'
-            df = stock.history(period="3mo")
+            df = stock.history(period="3mo")  # 抓取近 3 個月數據
             
-            # 若上市 (.TW) 抓不到，備用嘗試上櫃 (.TWO)
             if df.empty and ticker.endswith('.TW'):
                 stock = yf.Ticker(f"{code}.TWO")
                 df = stock.history(period="3mo")
@@ -120,10 +102,9 @@ def send_email(subject, body):
 def main():
     scanned_results, pullbacks = scan_stocks()
     
-    # 1. 處理拉回 >= 10% 區塊
+    # 1. 超跌 >= 10% 區塊
     if pullbacks:
         target_rows = ""
-        # 修正 2：迭代正確的字典元素 item
         for item in pullbacks:
             target_rows += f"""
             <tr style='text-align: center;'>
@@ -150,9 +131,9 @@ def main():
         </table>
         """
     else:
-        target_html = "<p style='color: green;'><b>✅ 掃描結果：觀察標的目前皆未出現 10% 以上的明顯拉回。</b></p>"
+        target_html = "<p style='color: green;'><b>✅ 掃描結果：50 大持股目前皆未出現 10% 以上的明顯拉回。</b></p>"
 
-    # 2. 處理全量掃描結果表格
+    # 2. 全量掃描總覽
     all_rows = ""
     for item in scanned_results:
         color_style = "color: #d9534f; font-weight: bold;" if item['drop'] >= 10.0 else "color: #333;"
@@ -167,7 +148,7 @@ def main():
         """
 
     summary_table_html = f"""
-    <h3>📋 持股完整掃描總覽（已驗證 {len(scanned_results)} 檔）</h3>
+    <h3>📋 NBIM 台灣持股前 50 大完整掃描總覽（已驗證 {len(scanned_results)}/50 檔）</h3>
     <table style='border-collapse: collapse; width: 100%; font-size: 14px;'>
         <thead>
             <tr style='background-color: #f8f9fa;'>
@@ -184,10 +165,15 @@ def main():
     </table>
     """
 
-    subject = f"【挪威主權基金月報】持股掃描完畢（發現 {len(pullbacks)} 檔拉回 >10%）"
+    subject = f"【挪威主權基金月報】前 50 大持股掃描完畢（發現 {len(pullbacks)} 檔拉回 >10%）"
     
     html_content = f"""
     <h2>📊 每月挪威主權基金持股與價格掃描通知</h2>
+    <div style='background-color: #e9ecef; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px;'>
+        <b>🛠️ 持股清單維護狀態：</b><br>
+        • 上次修訂日期：<b>{LAST_UPDATE_DATE}</b><br>
+        • 建議下次更新：<b>{NEXT_UPDATE_DATE}</b>（建議每半年至 NBIM 官網比對一次最新持股）
+    </div>
     <hr>
     <h3>📌 交易紀律提醒：</h3>
     <ol>
